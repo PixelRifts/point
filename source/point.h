@@ -324,49 +324,6 @@ PointString16 PointStr16FromStr8(PointArena* arena, PointString str);
 PointString   PointStr8FromStr16(PointArena* arena, PointString16 str);
 
 
-//~ Scope Stack
-
-typedef ptu64 PointTypeIndex;
-
-typedef struct PointScopeEntry PointScopeEntry;
-struct PointScopeEntry {
-  PointScopeEntry* next;
-  PointString      name;
-  PointTypeIndex   type;
-  // Other data I can't think of yet, probably
-};
-
-typedef struct PointScope PointScope;
-struct PointScope {
-  PointScope* parent;
-  
-  PointScope* next;
-  PointScope* prev;
-  
-  PointScope* first;
-  PointScope* last;
-  
-  PointScopeEntry* entries;
-};
-
-
-typedef struct PointScopeStack PointScopeStack;
-struct PointScopeStack {
-  PointPool scopes_pool;
-  PointPool entries_pool;
-  
-  PointScope* root;
-};
-
-PointScope*      PointScopeCreate(PointScopeStack* scopes, PointScope* parent);
-void             PointScopeDelete(PointScopeStack* scopes, PointScope* scope);
-PointScopeEntry* PointScopeEntryCreate(PointScopeStack* scopes, PointScope* scope, PointScopeEntry symbol);
-void             PointScopeEntryDelete(PointScopeStack* scopes, PointScope* scope, PointScopeEntry* symbol);
-
-void PointScopeStackInit(PointScopeStack* scopes);
-void PointScopeStackFree(PointScopeStack* scopes);
-
-
 //~ Types
 
 typedef enum PointTypeKind {
@@ -450,9 +407,60 @@ void PointTypeCacheFree(PointTypeCache* cache);
 PointType* PointTypeCacheRegister(PointTypeCache* cache,   PointType type);
 void       PointTypeCacheUnregister(PointTypeCache* cache, PointType* ctype);
 
+
+//~ Scope Stack
+
+typedef struct PointScopeEntry PointScopeEntry;
+struct PointScopeEntry {
+  PointScopeEntry* next;
+  PointString      name;
+  PointType*       type;
+  // Other data I can't think of yet, probably
+};
+
+typedef struct PointScope PointScope;
+struct PointScope {
+  PointScope* parent;
+  
+  PointScope* next;
+  PointScope* prev;
+  
+  PointScope* first;
+  PointScope* last;
+  
+  PointScopeEntry* entries;
+  
+  ptu32 scope_count;
+  ptu32 entry_count;
+};
+
+
+typedef struct PointScopeStack PointScopeStack;
+struct PointScopeStack {
+  PointArena names_arena;
+  PointPool scopes_pool;
+  PointPool entries_pool;
+  
+  PointScope* root;
+};
+
+typedef PointScope* PointScopeRef;
+PointDStackPrototype(PointScopeRef);
+
+PointScope*      PointScopeCreate(PointScopeStack* scopes, PointScope* parent);
+void             PointScopeDelete(PointScopeStack* scopes, PointScope* scope);
+PointScopeEntry* PointScopeEntryCreate(PointScopeStack* scopes, PointScope* scope, PointScopeEntry symbol);
+void             PointScopeEntryDelete(PointScopeStack* scopes, PointScope* scope, PointScopeEntry* symbol);
+
+void PointScopeStackInit(PointScopeStack* scopes);
+void PointScopeStackFree(PointScopeStack* scopes);
+
+
+
 //~ Tree
 
 typedef enum PointNodeType {
+  // Expressions
   Point_NT_Expr_IntLit, Point_NT_Expr_FloatLit,
   Point_NT_Expr_Add, Point_NT_Expr_Sub, Point_NT_Expr_Mul, Point_NT_Expr_Div,
   Point_NT_Expr_Mod, Point_NT_Expr_Identity, Point_NT_Expr_Negate, Point_NT_Expr_Not,
@@ -665,6 +673,7 @@ struct PointNode {
 typedef struct PointProgram PointProgram;
 struct PointProgram {
   PointArena  node_arena;
+  
   PointScopeStack scopes;
   PointNode*       decls;
   PointTypeCache   types;
@@ -1288,6 +1297,7 @@ PointString PointStr8FromStr16(PointArena *arena, PointString16 str) {
 PointScope* PointScopeCreate(PointScopeStack* scopes, PointScope* parent) {
   PointScope* scope = PointPoolAlloc(&scopes->scopes_pool);
   if (!parent) return scope;
+  parent->scope_count += 1;
   
   scope->parent = parent;
   // DLL_Insert
@@ -1314,16 +1324,23 @@ void PointScopeDelete(PointScopeStack* scopes, PointScope* scope) {
     if (parent->last  == scope) parent->last  = scope->prev;
     if (scope->prev) scope->prev->next = scope->next;
     if (scope->next) scope->next->prev = scope->prev;
+    
+    parent->scope_count -= 1;
     PointPoolDealloc(&scopes->scopes_pool, scope);
   }
 }
 
 PointScopeEntry* PointScopeEntryCreate(PointScopeStack* scopes, PointScope* scope, PointScopeEntry symbol) {
   PointScopeEntry* entry = PointPoolAlloc(&scopes->entries_pool);
-  
+  memmove(entry, &symbol, sizeof(PointScopeEntry));
+  scope->entry_count += 1;
   PointScopeEntry* iter = scope->entries;
-  while (iter->next) iter = iter->next;
-  iter->next = entry;
+  if (iter) {
+    while (iter->next) iter = iter->next;
+    iter->next = entry;
+  } else {
+    scope->entries = entry;
+  }
   
   return entry;
 }
@@ -1337,6 +1354,7 @@ void PointScopeEntryDelete(PointScopeStack* scopes, PointScope* scope, PointScop
 
 void PointScopeStackInit(PointScopeStack* scopes) {
   PointMemoryZeroStruct(scopes, PointScopeStack);
+  PointArenaInit(&scopes->names_arena);
   PointPoolInit(&scopes->scopes_pool, sizeof(PointScope));
   PointPoolInit(&scopes->entries_pool, sizeof(PointScopeEntry));
   
@@ -1346,6 +1364,7 @@ void PointScopeStackInit(PointScopeStack* scopes) {
 void PointScopeStackFree(PointScopeStack* scopes) {
   PointPoolFree(&scopes->scopes_pool);
   PointPoolFree(&scopes->entries_pool);
+  PointArenaFree(&scopes->names_arena);
 }
 
 //~ Types
@@ -1540,7 +1559,7 @@ void PointProgramFree(PointProgram* prog) {
 }
 
 
-//~ Program File Format
+//~ Program File Format Helpers
 
 
 static void* PointRead(void** ptr, size_t type_size) {
@@ -1587,7 +1606,6 @@ struct POINTREDUCEDTYPE {
     struct { ptu32  sub_uid;     ptu64 count;                                    } array_t;
   };
 };
-
 
 typedef POINTREDUCEDTYPE* POINTREDUCEDTYPEREF;
 PointDQueuePrototype(POINTREDUCEDTYPEREF);
@@ -1662,7 +1680,7 @@ static void PointTypeDeserialize(PointArena* misc_arena, POINTREDUCEDTYPE* slot,
       slot->func_t.ret_uid    = PointReadType(track, ptu32);
       slot->func_t.arg_uids   = PointArenaAlloc(misc_arena, sizeof(ptu32) * slot->func_t.arity);
       for (int i = 0; i < slot->func_t.arity; i++)
-        slot->func_t.arg_uids[i] = PointReadType(track, ptu32);;
+        slot->func_t.arg_uids[i] = PointReadType(track, ptu32);
     } break;
     
     case Point_TK_Pointer: {
@@ -1749,6 +1767,51 @@ static void PointTypeReducedToCanonical(PointTypeCache* types, POINTREDUCEDTYPE*
   curr->canonical = canonical;
 }
 
+
+PointDStackImpl(PointScopeRef);
+
+static void PointScopeEntriesSerialize(PointArena* arena, PointScope* scope) {
+  ptu32* entry_count = PointArenaAllocUnaligned(arena, sizeof(ptu32));
+  *entry_count = scope->entry_count;
+  
+  PointScopeEntry* curr = scope->entries;
+  while (curr) {
+    ptu64* string_len = PointArenaAllocUnaligned(arena, sizeof(ptu64));
+    *string_len = curr->name.size;
+    ptu8*  string_buf = PointArenaAllocUnaligned(arena, sizeof(ptu8) * curr->name.size);
+    memmove(string_buf, curr->name.str, sizeof(ptu8) * curr->name.size);
+    ptu32* type_id    = PointArenaAllocUnaligned(arena, sizeof(ptu32));
+    *type_id = curr->type->uid;
+    
+    curr = curr->next;
+  }
+}
+
+static void PointScopeEntriesDeserialize(PointArena* misc_arena, PointPool* entries_pool, PointScope* fill, POINTREDUCEDTYPE* type_set, void** ptr) {
+  void* track = *ptr;
+  fill->entry_count = PointReadType(track, ptu32);
+  
+  PointScopeEntry* prev = NULL;
+  for (int i = 0; i < fill->entry_count; i++) {
+    PointScopeEntry* curr = PointPoolAlloc(entries_pool);
+    
+    if (prev) prev->next = curr;
+    else fill->entries = curr;
+    
+    curr->name.size = PointReadType(track, ptu64);
+    curr->name.str = PointArenaAlloc(misc_arena, sizeof(ptu8) * curr->name.size);
+    memmove(curr->name.str, track, sizeof(ptu8) * curr->name.size);
+    track = ((ptu8*)track) + curr->name.size;
+    curr->type = type_set[PointReadType(track, ptu32)].canonical;
+    
+    prev = curr;
+  }
+  
+  *ptr = track;
+}
+
+//~ Program Save / Load
+
 void PointProgramSave(PointProgram* prog, PointString filename) {
   POINTHEADER header = {0};
   header.magic_number = POINT_MAGIC_NUMBER;
@@ -1763,7 +1826,6 @@ void PointProgramSave(PointProgram* prog, PointString filename) {
   PointArenaInit(&dynamic_sections);
   
   //- Types Buffer
-  
   ptu32 typeid_ctr = 0;
   for (int i = 0; i < prog->types.bucket_count; i++) {
     PointTypeBucket* curr = prog->types.buckets[i];
@@ -1782,6 +1844,24 @@ void PointProgramSave(PointProgram* prog, PointString filename) {
       curr = curr->next;
     }
   }
+  
+  //- Scopes Buffer
+  PointDStack(PointScopeRef) scope_working_set = {0};
+  PointDStackPush(PointScopeRef, &scope_working_set, prog->scopes.root);
+  while (scope_working_set.len) {
+    PointScope* work = PointDStackPop(PointScopeRef, &scope_working_set);
+    PointScopeEntriesSerialize(&dynamic_sections, work);
+    
+    ptu32* scope_count = PointArenaAllocUnaligned(&dynamic_sections, sizeof(ptu32));
+    *scope_count = work->scope_count;
+    
+    PointScope* curr = work->first;
+    while (curr) {
+      PointDStackPush(PointScopeRef, &scope_working_set, curr);
+      curr = curr->next;
+    }
+  }
+  
   
   //- Finalize
   FILE* file = fopen(filename.str, "wb");
@@ -1836,11 +1916,28 @@ void PointProgramLoad(PointProgram* prog, PointString filename) {
     }
   }
   
+  //- Scopes
+  PointDStack(PointScopeRef) scope_working_set = {0};
+  PointDStackPush(PointScopeRef, &scope_working_set, prog->scopes.root);
+  
+  while (scope_working_set.len) {
+    PointScope* work = PointDStackPop(PointScopeRef, &scope_working_set);
+    PointScopeEntriesDeserialize(&prog->scopes.names_arena, &prog->scopes.entries_pool, work, type_set, &buffer);
+    
+    work->scope_count = PointReadType(buffer, ptu32);
+    for (int i = 0; i < work->scope_count; i++) {
+      PointScope* new_scope = PointScopeCreate(&prog->scopes, work);
+      work->scope_count -= 1; // Kindof weird to undo but it's *fine* for now
+      PointDStackPush(PointScopeRef, &scope_working_set, new_scope);
+    }
+  }
+  
+  
+  
   //- Finish
   PointArenaFree(&file_buffer);
   PointArenaFree(&pieces);
 }
-
 
 
 
