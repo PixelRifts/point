@@ -2108,9 +2108,9 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
                                        PointScopeEntry** entries_set,
                                        void** ptr) {
   void* track = *ptr;
-  PointNode* ret = PointPoolAlloc(node_pool);
+  PointNode* ret = (PointNode*) PointPoolAlloc(node_pool);
   
-  ret->type = PointReadType(track, ptu64);
+  ret->type = (PointNodeType) PointReadType(track, ptu64);
   
   switch (ret->type) {
     case Point_NT_Expr_IntLit: {
