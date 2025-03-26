@@ -432,6 +432,7 @@ void       PointTypeCacheUnregister(PointTypeCache* cache, PointType* ctype);
 typedef struct PointScopeEntry PointScopeEntry;
 struct PointScopeEntry {
   PointScopeEntry* next;
+  ptu32            uid;
   PointString      name;
   PointType*       type;
   // Other data I can't think of yet, probably
@@ -449,6 +450,7 @@ struct PointScope {
   
   PointScopeEntry* entries;
   
+  ptu32 uid;
   ptu32 scope_count;
   ptu32 entry_count;
 };
@@ -487,16 +489,16 @@ typedef enum PointNodeType {
   Point_NT_Expr_LessEq, Point_NT_Expr_GreaterEq, Point_NT_Expr_FuncProto, Point_NT_Expr_Func,
   Point_NT_Expr_ShiftLeft, Point_NT_Expr_ShiftRight, Point_NT_Expr_BitAND, Point_NT_Expr_BitOR,
   Point_NT_Expr_Index, Point_NT_Expr_Addr, Point_NT_Expr_Deref, Point_NT_Expr_Call,
-  Point_NT_Expr_Ident, Point_NT_Expr_Cast, Point_NT_Expr_Access, Point_NT_Expr_ArrayLit,
+  Point_NT_Expr_Ident, Point_NT_Expr_Cast, Point_NT_Expr_ArrayLit,
   
   // Types
   Point_NT_Type_Integer, Point_NT_Type_Float, Point_NT_Type_Void,
-  Point_NT_Type_Func, Point_NT_Type_Struct, Point_NT_Type_Union,
+  Point_NT_Type_Func,
   Point_NT_Type_Pointer, Point_NT_Type_Array,
   
   // Statements
   Point_NT_Stmt_Assign, Point_NT_Stmt_Expr, Point_NT_Stmt_Block,
-  Point_NT_Stmt_While, Point_NT_Stmt_If, Point_NT_Stmt_Return, Point_NT_Stmt_Write,
+  Point_NT_Stmt_While, Point_NT_Stmt_If, Point_NT_Stmt_Return,
   
   // Declaration
   Point_NT_Decl,
@@ -505,6 +507,8 @@ typedef enum PointNodeType {
 } PointNodeType;
 
 typedef struct PointNode PointNode;
+typedef PointNode* PointNodeRef;
+PointDStackPrototype(PointNodeRef);
 
 typedef struct PointBinaryOpNode PointBinaryOpNode;
 struct PointBinaryOpNode {
@@ -512,16 +516,9 @@ struct PointBinaryOpNode {
   PointNode* right;
 };
 
-
 typedef struct PointUnaryOpNode PointUnaryOpNode;
 struct PointUnaryOpNode {
   PointNode* operand;
-};
-
-typedef struct PointArrayIndexNode PointArrayIndexNode;
-struct PointArrayIndexNode {
-  PointNode* left;
-  PointNode* idx;
 };
 
 typedef struct PointFuncCallNode PointFuncCallNode;
@@ -537,29 +534,20 @@ struct PointFuncProtoNode {
   PointNode*       arg_types;
   
   // Array, and not a Linked List
-  PointScopeEntry* arg_names;
-  ptu32            arity;
+  PointScopeEntry** arg_names;
+  ptu32             arity;
 };
 
 typedef struct PointFuncNode PointFuncNode;
 struct PointFuncNode {
   PointNode* proto;
   PointNode* body;
-  ptu64 total_local_size;
-  ptu64 tracking_local_size;
 };
 
 typedef struct PointCastNode PointCastNode;
 struct PointCastNode {
   PointNode* casted;
   PointNode* type;
-};
-
-typedef struct PointAccessNode PointAccessNode;
-struct PointAccessNode {
-  PointNode* left;
-  PointScopeEntry right;
-  ptb8 deref;
 };
 
 typedef struct PointArrayLitNode PointArrayLitNode;
@@ -598,38 +586,41 @@ struct PointFuncTypeNode {
   ptu32      arity;
 };
 
+typedef struct PointBlockNode PointBlockNode;
+struct PointBlockNode {
+  PointNode*  body;
+  PointScope* scope;
+};
+
 typedef struct PointWhileLoopNode PointWhileLoopNode;
 struct PointWhileLoopNode {
   PointNode*  condition;
   PointNode*  body;
-  PointScope* scope;
 };
 
 typedef struct PointIfStmtNode PointIfStmtNode;
 struct PointIfStmtNode {
   PointNode*  condition;
   PointNode*  then_body;
-  PointScope* then_scope;
   PointNode*  else_body;
-  PointScope* else_scope;
 };
 
 typedef struct PointDeclNode PointDeclNode;
 struct PointDeclNode {
-  PointScopeEntry ref;
-  PointNode*      type;
-  PointNode*      val;
+  PointScopeEntry* ref;
+  PointNode*       type;
+  PointNode*       val;
   
   ptb8 is_constant;
 };
 
 
 typedef enum PointConstantValueType {
-  CVT_None,
-  CVT_Int,
-  CVT_Float,
-  CVT_Type,
-  CVT_Buffer,
+  Point_CVT_None,
+  Point_CVT_Int,
+  Point_CVT_Float,
+  Point_CVT_Type,
+  Point_CVT_Buffer,
 } PointConstantValueType;
 
 typedef struct PointConstantValue PointConstantValue;
@@ -650,9 +641,6 @@ struct PointNode {
   PointNodeType type;
   PointNode* next;
   
-  ptu64 hash;
-  PointNode* hash_next;
-  
   // Constant Values
   ptb8 is_constant;
   PointConstantValue constant_val;
@@ -667,12 +655,10 @@ struct PointNode {
     PointUnaryOpNode  unary_op;
     PointFuncProtoNode proto;
     PointFuncNode func;
-    PointArrayIndexNode index;
     PointFuncCallNode call;
     PointNode* addr;
     PointNode* deref;
     PointCastNode cast;
-    PointAccessNode access;
     
     PointIntegerTypeNode int_type;
     PointFloatTypeNode float_type;
@@ -684,14 +670,15 @@ struct PointNode {
     PointNode* return_stmt;
     PointWhileLoopNode while_loop;
     PointIfStmtNode if_stmt;
-    PointNode* block;
+    PointBlockNode block;
     PointDeclNode decl;
   };
 };
 
 typedef struct PointProgram PointProgram;
 struct PointProgram {
-  PointArena  node_arena;
+  PointArena misc_arena;
+  PointPool  node_pool;
   
   PointScopeStack scopes;
   PointNode*       decls;
@@ -1571,17 +1558,20 @@ void PointTypeCacheUnregister(PointTypeCache* cache, PointType* ctype) {
 
 void PointProgramInit(PointProgram* prog) {
   PointMemoryZeroStruct(prog, PointProgram);
-  PointArenaInit(&prog->node_arena);
+  PointArenaInit(&prog->misc_arena);
+  PointPoolInit(&prog->node_pool, sizeof(PointNode));
+  
   PointScopeStackInit(&prog->scopes);
   prog->decls = NULL;
-  PointTypeCacheInit(&prog->node_arena, &prog->types);
+  PointTypeCacheInit(&prog->misc_arena, &prog->types);
 }
 
 void PointProgramFree(PointProgram* prog) {
   PointTypeCacheFree(&prog->types);
   PointScopeStackFree(&prog->scopes);
   
-  PointArenaFree(&prog->node_arena);
+  PointPoolFree(&prog->node_pool);
+  PointArenaFree(&prog->misc_arena);
 }
 
 
@@ -1597,10 +1587,11 @@ static void* PointRead(void** ptr, size_t type_size) {
 #define PointReadType(ptr, type) (*((type*)PointRead(&ptr, sizeof(type))))
 
 
-#define POINT_MAGIC_NUMBER 0xBEBEBE544E494F50llu
-#define POINT_MAGIC_TYPES  0x45505954u
-#define POINT_MAGIC_SCOPES 0x504F4353u
-#define POINT_MAGIC_NODES  0x45444F4Eu
+#define POINT_MAGIC_NUMBER  0xBEBEBE544E494F50llu
+#define POINT_MAGIC_TYPES   0x45505954u
+#define POINT_MAGIC_SCOPES  0x504F4353u
+#define POINT_MAGIC_ENTRIES 0x52544E45u
+#define POINT_MAGIC_NODES   0x45444F4Eu
 
 typedef struct POINTHEADER POINTHEADER;
 struct POINTHEADER {
@@ -1609,6 +1600,8 @@ struct POINTHEADER {
   ptu32 seg_types;
   ptu32 magic_scopes;
   ptu32 seg_scopes;
+  ptu32 magic_entries;
+  ptu32 seg_entries;
   ptu32 magic_nodes;
   ptu32 seg_nodes;
 };
@@ -1796,16 +1789,19 @@ static void PointTypeReducedToCanonical(PointTypeCache* types, POINTREDUCEDTYPE*
 
 PointDStackImpl(PointScopeRef);
 
-static void PointScopeEntriesSerialize(PointArena* arena, PointScope* scope) {
+static void PointScopeEntriesSerialize(PointArena* arena, PointScope* scope, ptu32* guid) {
   ptu32* entry_count = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
   *entry_count = scope->entry_count;
   
   PointScopeEntry* curr = scope->entries;
   while (curr) {
+    curr->uid = *guid;
+    
     ptu64* string_len = (ptu64*) PointArenaAllocUnaligned(arena, sizeof(ptu64));
     *string_len = curr->name.size;
     ptu8*  string_buf = (ptu8*) PointArenaAllocUnaligned(arena, sizeof(ptu8) * curr->name.size);
     memmove(string_buf, curr->name.str, sizeof(ptu8) * curr->name.size);
+    
     ptu32* type_id    = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
     *type_id = curr->type->uid;
     
@@ -1813,7 +1809,10 @@ static void PointScopeEntriesSerialize(PointArena* arena, PointScope* scope) {
   }
 }
 
-static void PointScopeEntriesDeserialize(PointArena* misc_arena, PointPool* entries_pool, PointScope* fill, POINTREDUCEDTYPE* type_set, void** ptr) {
+static void PointScopeEntriesDeserialize(PointArena* misc_arena, PointPool* entries_pool,
+                                         PointScope* fill, POINTREDUCEDTYPE* type_set,
+                                         PointScopeEntry** scope_set, ptu32* curr_scope_uid,
+                                         void** ptr) {
   void* track = *ptr;
   fill->entry_count = PointReadType(track, ptu32);
   
@@ -1830,23 +1829,529 @@ static void PointScopeEntriesDeserialize(PointArena* misc_arena, PointPool* entr
     track = ((ptu8*)track) + curr->name.size;
     curr->type = type_set[PointReadType(track, ptu32)].canonical;
     
+    scope_set[*curr_scope_uid] = curr;
+    *curr_scope_uid += 1;
+    
     prev = curr;
   }
   
   *ptr = track;
 }
 
+PointDStackImpl(PointNodeRef);
+
+#define __point_dump_expr_type do {\
+ptu32* expr_type = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));\
+*expr_type = work->expr_type->uid;\
+} while (0)
+#define __point_dump_constant_type do {\
+ptu32* expr_type = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));\
+*expr_type = work->constant_val.type_lit->uid;\
+} while (0)
+
+static void PointNodeSerialize(PointArena* arena, PointNode* node) {
+  PointDStack(PointNodeRef) working_set = PointZStruct;
+  PointDStackPush(PointNodeRef, &working_set, node);
+  
+  while (working_set.len) {
+    PointNode* work = PointDStackPop(PointNodeRef, &working_set);
+    
+    ptu64* type = (ptu64*) PointArenaAllocUnaligned(arena, sizeof(ptu64));
+    *type = work->type;
+    
+    switch (work->type) {
+      case Point_NT_Expr_IntLit: {
+        __point_dump_expr_type;
+        pti64* constant = (pti64*) PointArenaAllocUnaligned(arena, sizeof(pti64));
+        *constant = work->constant_val.int_lit;
+      } break;
+      
+      case Point_NT_Expr_FloatLit: {
+        __point_dump_expr_type;
+        ptf64* constant = (ptf64*) PointArenaAllocUnaligned(arena, sizeof(ptf64));
+        *constant = work->constant_val.float_lit;
+      } break;
+      
+      case Point_NT_Expr_Add:
+      case Point_NT_Expr_Sub:
+      case Point_NT_Expr_Mul:
+      case Point_NT_Expr_Div:
+      case Point_NT_Expr_Mod:
+      case Point_NT_Expr_Eq:
+      case Point_NT_Expr_Neq:
+      case Point_NT_Expr_Less:
+      case Point_NT_Expr_Greater:
+      case Point_NT_Expr_LessEq:
+      case Point_NT_Expr_GreaterEq:
+      case Point_NT_Expr_ShiftLeft:
+      case Point_NT_Expr_ShiftRight:
+      case Point_NT_Expr_BitAND:
+      case Point_NT_Expr_BitOR:
+      case Point_NT_Expr_Index: {
+        __point_dump_expr_type;
+        PointDStackPush(PointNodeRef, &working_set, work->binary_op.right);
+        PointDStackPush(PointNodeRef, &working_set, work->binary_op.left);
+      } break;
+      
+      case Point_NT_Expr_Identity:
+      case Point_NT_Expr_Negate:
+      case Point_NT_Expr_Not: {
+        __point_dump_expr_type;
+        PointDStackPush(PointNodeRef, &working_set, work->unary_op.operand);
+      } break;
+      
+      case Point_NT_Expr_FuncProto: {
+        ptu32* arity = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *arity = work->proto.arity;
+        
+        PointNode* curr = work->proto.arg_types;
+        ptu32 i = 0;
+        while (curr) {
+          ptu32* entry_uid = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+          *entry_uid = work->proto.arg_names[i]->uid;
+          PointDStackPush(PointNodeRef, &working_set, curr);
+          curr = curr->next;
+          i += 1;
+        }
+        PointDStackPush(PointNodeRef, &working_set, work->proto.return_type);
+      } break;
+      
+      case Point_NT_Expr_Func: {
+        __point_dump_expr_type;
+        PointDStackPush(PointNodeRef, &working_set, work->func.body);
+        PointDStackPush(PointNodeRef, &working_set, work->func.proto);
+      } break;
+      
+      case Point_NT_Expr_Addr: {
+        __point_dump_expr_type;
+        PointDStackPush(PointNodeRef, &working_set, work->addr);
+      } break;
+      
+      case Point_NT_Expr_Deref: {
+        __point_dump_expr_type;
+        PointDStackPush(PointNodeRef, &working_set, work->deref);
+      } break;
+      
+      case Point_NT_Expr_Call: {
+        __point_dump_expr_type;
+        ptu32* arity = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *arity = work->call.arity;
+        
+        PointNode* curr = work->call.args;
+        while (curr) {
+          PointDStackPush(PointNodeRef, &working_set, curr);
+          curr = curr->next;
+        }
+        PointDStackPush(PointNodeRef, &working_set, work->call.called);
+      } break;
+      
+      case Point_NT_Expr_Ident: {
+        __point_dump_expr_type;
+        ptu32* entry_uid = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *entry_uid = work->ident->uid;
+      } break;
+      
+      case Point_NT_Expr_Cast: {
+        __point_dump_expr_type;
+        PointDStackPush(PointNodeRef, &working_set, work->cast.casted);
+        PointDStackPush(PointNodeRef, &working_set, work->cast.type);
+      } break;
+      
+      case Point_NT_Expr_ArrayLit: {
+        __point_dump_expr_type;
+        ptu32* count = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *count = work->array_lit.count;
+        
+        PointNode* curr = work->array_lit.values;
+        while (curr) {
+          PointDStackPush(PointNodeRef, &working_set, curr);
+          curr = curr->next;
+        }
+        PointDStackPush(PointNodeRef, &working_set, work->array_lit.type);
+      } break;
+      
+      case Point_NT_Type_Integer: {
+        __point_dump_expr_type;
+        __point_dump_constant_type;
+        
+        ptu32* size = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *size = work->int_type.size;
+        
+        ptb8* is_signed = (ptb8*) PointArenaAllocUnaligned(arena, sizeof(ptb8));
+        *is_signed = work->int_type.is_signed;
+      } break;
+      
+      case Point_NT_Type_Float: {
+        __point_dump_expr_type;
+        __point_dump_constant_type;
+        
+        ptu32* size = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *size = work->float_type.size;
+      } break;
+      
+      case Point_NT_Type_Void: {
+        __point_dump_expr_type;
+        __point_dump_constant_type;
+      } break;
+      
+      case Point_NT_Type_Func: {
+        __point_dump_expr_type;
+        __point_dump_constant_type;
+        
+        ptu32* arity = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *arity = work->func_type.arity;
+        
+        PointNode* curr = work->func_type.arg_types;
+        ptu32 i = 0;
+        while (curr) {
+          PointDStackPush(PointNodeRef, &working_set, curr);
+          curr = curr->next;
+          i += 1;
+        }
+        PointDStackPush(PointNodeRef, &working_set, work->func_type.return_type);
+      } break;
+      
+      case Point_NT_Type_Pointer: {
+        __point_dump_expr_type;
+        __point_dump_constant_type;
+        
+        PointDStackPush(PointNodeRef, &working_set, work->pointer_type.sub);
+      } break;
+      
+      case Point_NT_Type_Array: {
+        __point_dump_expr_type;
+        __point_dump_constant_type;
+        
+        PointDStackPush(PointNodeRef, &working_set, work->array_type.count);
+        PointDStackPush(PointNodeRef, &working_set, work->array_type.sub);
+      } break;
+      
+      case Point_NT_Stmt_Expr: {
+        PointDStackPush(PointNodeRef, &working_set, work->expr_stmt);
+      } break;
+      
+      case Point_NT_Stmt_Assign: {
+        PointDStackPush(PointNodeRef, &working_set, work->binary_op.left);
+        PointDStackPush(PointNodeRef, &working_set, work->binary_op.right);
+      } break;
+      
+      case Point_NT_Stmt_Block: {
+        ptu32 i = 0;
+        PointNode* curr = work->block.body;
+        while (curr) {
+          PointDStackPush(PointNodeRef, &working_set, curr);
+          curr = curr->next;
+          i += 1;
+        }
+        
+        ptu32* scope = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *scope = work->block.scope->uid;
+        ptu32* count = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *count = i;
+      } break;
+      
+      case Point_NT_Stmt_While: {
+        PointDStackPush(PointNodeRef, &working_set, work->while_loop.condition);
+        PointDStackPush(PointNodeRef, &working_set, work->while_loop.body);
+      } break;
+      
+      case Point_NT_Stmt_If: {
+        PointDStackPush(PointNodeRef, &working_set, work->if_stmt.condition);
+        ptb8* has_else = (ptb8*) PointArenaAllocUnaligned(arena, sizeof(ptb8));
+        *has_else = !!(work->if_stmt.else_body);
+        
+        PointDStackPush(PointNodeRef, &working_set, work->if_stmt.then_body);
+        if (!!(work->if_stmt.else_body))
+          PointDStackPush(PointNodeRef, &working_set, work->if_stmt.else_body);
+        
+      } break;
+      
+      case Point_NT_Stmt_Return: {
+        PointDStackPush(PointNodeRef, &working_set, work->return_stmt);
+      } break;
+      
+      case Point_NT_Decl: {
+        ptu32* entry_uid = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *entry_uid = work->decl.ref->uid;
+        
+        ptb8* has_type = (ptb8*) PointArenaAllocUnaligned(arena, sizeof(ptb8));
+        *has_type = !!(work->decl.type);
+        ptb8* has_value = (ptb8*) PointArenaAllocUnaligned(arena, sizeof(ptb8));
+        *has_value = !!(work->decl.val);
+        
+        ptb8* is_constant = (ptb8*) PointArenaAllocUnaligned(arena, sizeof(ptb8));
+        *is_constant = work->decl.is_constant;
+        
+        if (!!(work->decl.type)) PointDStackPush(PointNodeRef, &working_set, work->decl.type);
+        if (!!(work->decl.val))  PointDStackPush(PointNodeRef, &working_set, work->decl.val);
+        
+      } break;
+      
+      case Point_NT_COUNT: break;
+    }
+  }
+}
+#undef __point_dump_expr_type
+#undef __point_dump_constant_type
+
+// TODO(voxel): Replace naive recursive implementation with iterative.
+#define __point_read_expr_type do {\
+ret->expr_type = type_set[PointReadType(track, ptu32)].canonical;\
+} while (0)
+#define __point_read_constant_type do {\
+ret->is_constant = true;\
+ret->constant_val.type = Point_CVT_Type;\
+ret->constant_val.type_lit = type_set[PointReadType(track, ptu32)].canonical;\
+} while (0)
+static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
+                                       POINTREDUCEDTYPE* type_set, PointScope** scope_set,
+                                       PointScopeEntry** entries_set,
+                                       void** ptr) {
+  void* track = *ptr;
+  PointNode* ret = PointPoolAlloc(node_pool);
+  
+  ret->type = PointReadType(track, ptu64);
+  
+  switch (ret->type) {
+    case Point_NT_Expr_IntLit: {
+      __point_read_expr_type;
+      ret->is_constant = true;
+      ret->constant_val.type = Point_CVT_Int;
+      ret->constant_val.int_lit = PointReadType(track, pti64);
+    } break;
+    
+    case Point_NT_Expr_FloatLit: {
+      __point_read_expr_type;
+      ret->is_constant = true;
+      ret->constant_val.type = Point_CVT_Float;
+      ret->constant_val.float_lit = PointReadType(track, ptf64);
+    } break;
+    
+    case Point_NT_Expr_Add:
+    case Point_NT_Expr_Sub:
+    case Point_NT_Expr_Mul:
+    case Point_NT_Expr_Div:
+    case Point_NT_Expr_Mod:
+    case Point_NT_Expr_Eq:
+    case Point_NT_Expr_Neq:
+    case Point_NT_Expr_Less:
+    case Point_NT_Expr_Greater:
+    case Point_NT_Expr_LessEq:
+    case Point_NT_Expr_GreaterEq:
+    case Point_NT_Expr_ShiftLeft:
+    case Point_NT_Expr_ShiftRight:
+    case Point_NT_Expr_BitAND:
+    case Point_NT_Expr_BitOR:
+    case Point_NT_Expr_Index:
+    case Point_NT_Stmt_Assign: {
+      __point_read_expr_type;
+      ret->binary_op.left  = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      ret->binary_op.right = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break; 
+    
+    case Point_NT_Expr_Identity:
+    case Point_NT_Expr_Negate:
+    case Point_NT_Expr_Not: {
+      __point_read_expr_type;
+      ret->unary_op.operand = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Expr_FuncProto: {
+      ret->proto.arity = PointReadType(track, ptu32);
+      for (int i = 0; i < ret->proto.arity; i++) {
+        ret->proto.arg_names[i] = entries_set[PointReadType(track, ptu32)];
+      }
+      ret->proto.return_type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      
+      PointNode* arg_types = NULL;
+      for (int i = 0; i < ret->proto.arity; i++) {
+        PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+        curr->next = arg_types;
+        arg_types  = curr;
+      }
+      ret->proto.arg_types = arg_types;
+    } break;
+    
+    case Point_NT_Expr_Func: {
+      __point_read_expr_type;
+      ret->func.proto = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      ret->func.body  = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track); 
+    } break;
+    
+    case Point_NT_Expr_Addr: {
+      __point_read_expr_type;
+      ret->addr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Expr_Deref: {
+      __point_read_expr_type;
+      ret->deref = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Expr_Call: {
+      __point_read_expr_type;
+      ret->call.arity = PointReadType(track, ptu32);
+      
+      ret->call.called = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      
+      PointNode* args = NULL;
+      for (int i = 0; i < ret->call.arity; i++) {
+        PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+        curr->next = args;
+        args = curr;
+      }
+      ret->call.args = args;
+    } break;
+    
+    case Point_NT_Expr_Ident: {
+      __point_read_expr_type;
+      ret->ident = entries_set[PointReadType(track, ptu32)];
+    } break;
+    
+    case Point_NT_Expr_Cast: {
+      __point_read_expr_type;
+      ret->cast.type   = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      ret->cast.casted = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Expr_ArrayLit: {
+      __point_read_expr_type;
+      ret->array_lit.count = PointReadType(track, ptu32);
+      
+      ret->array_lit.type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      
+      PointNode* values = NULL;
+      for (int i = 0; i < ret->array_lit.count; i++) {
+        PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+        curr->next = values;
+        values = curr;
+      }
+      ret->array_lit.values = values;
+      
+    } break;
+    
+    case Point_NT_Type_Integer: {
+      __point_read_expr_type;
+      __point_read_constant_type;
+      ret->int_type.size = PointReadType(track, ptu32);
+      ret->int_type.is_signed = PointReadType(track, ptb8);
+    } break;
+    
+    case Point_NT_Type_Float: {
+      __point_read_expr_type;
+      __point_read_constant_type;
+      ret->float_type.size = PointReadType(track, ptu32);
+    } break;
+    
+    case Point_NT_Type_Void: {
+      __point_read_expr_type;
+      __point_read_constant_type;
+    } break;
+    
+    case Point_NT_Type_Func: {
+      __point_read_expr_type;
+      __point_read_constant_type;
+      ret->func_type.arity = PointReadType(track, ptu32);
+      
+      ret->func_type.return_type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      
+      PointNode* arg_types = NULL;
+      for (int i = 0; i < ret->func_type.arity; i++) {
+        PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+        curr->next = arg_types;
+        arg_types = curr;
+      }
+      ret->func_type.arg_types = arg_types;
+      
+    } break;
+    
+    case Point_NT_Type_Pointer: {
+      __point_read_expr_type;
+      __point_read_constant_type;
+      
+      ret->pointer_type.sub = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Type_Array: {
+      __point_read_expr_type;
+      __point_read_constant_type;
+      
+      ret->array_type.sub = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      ret->array_type.count = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    
+    case Point_NT_Stmt_Expr: {
+      ret->expr_stmt = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Stmt_Block: {
+      ret->block.scope = scope_set[PointReadType(track, ptu32)];
+      ptu32 block_len = PointReadType(track, ptu32);
+      
+      PointNode* next = NULL;
+      for (int i = 0; i < block_len; i++) {
+        PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+        curr->next = next;
+        next = curr;
+      }
+      ret->block.body = next;
+    } break;
+    
+    case Point_NT_Stmt_While: {
+      ret->while_loop.body = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      ret->while_loop.condition = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Stmt_If: {
+      ptb8 has_else = PointReadType(track, ptb8);
+      
+      if (has_else) {
+        ret->if_stmt.else_body = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      }
+      ret->if_stmt.then_body = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      ret->if_stmt.condition = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Stmt_Return: {
+      ret->return_stmt = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_Decl: {
+      ret->decl.ref = entries_set[PointReadType(track, ptu32)];
+      
+      ptb8 has_type  = PointReadType(track, ptb8);
+      ptb8 has_value = PointReadType(track, ptb8);
+      ret->decl.is_constant = PointReadType(track, ptb8);
+      
+      if (has_value)
+        ret->decl.val = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+      if (has_type)
+        ret->decl.type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+    } break;
+    
+    case Point_NT_COUNT: break;
+  }
+  
+  *ptr = track;
+  return ret;
+}
+#undef __point_read_expr_type
+#undef __point_read_constant_type
+
 //~ Program Save / Load
 
 void PointProgramSave(PointProgram* prog, PointString filename) {
   POINTHEADER header = PointZStruct;
-  header.magic_number = POINT_MAGIC_NUMBER;
-  header.magic_types  = POINT_MAGIC_TYPES;
-  header.magic_scopes = POINT_MAGIC_SCOPES;
-  header.magic_nodes  = POINT_MAGIC_NODES;
-  header.seg_types    = prog->types.type_count;
-  header.seg_scopes   = 0;
-  header.seg_nodes    = 0;
+  header.magic_number  = POINT_MAGIC_NUMBER;
+  header.magic_types   = POINT_MAGIC_TYPES;
+  header.magic_scopes  = POINT_MAGIC_SCOPES;
+  header.magic_entries = POINT_MAGIC_ENTRIES;
+  header.magic_nodes   = POINT_MAGIC_NODES;
+  header.seg_types     = prog->types.type_count;
+  header.seg_scopes    = 0;
+  header.seg_entries   = 0;
+  header.seg_nodes     = 1;
   
   PointArena dynamic_sections = PointZStruct;
   PointArenaInit(&dynamic_sections);
@@ -1872,11 +2377,15 @@ void PointProgramSave(PointProgram* prog, PointString filename) {
   }
   
   //- Scopes Buffer
+  ptu32 entries_guid = 0;
+  ptu32 scopes_guid = 0;
   PointDStack(PointScopeRef) scope_working_set = PointZStruct;
   PointDStackPush(PointScopeRef, &scope_working_set, prog->scopes.root);
   while (scope_working_set.len) {
     PointScope* work = PointDStackPop(PointScopeRef, &scope_working_set);
-    PointScopeEntriesSerialize(&dynamic_sections, work);
+    work->uid = scopes_guid;
+    scopes_guid += 1;
+    PointScopeEntriesSerialize(&dynamic_sections, work, &entries_guid);
     
     ptu32* scope_count = (ptu32*) PointArenaAllocUnaligned(&dynamic_sections, sizeof(ptu32));
     *scope_count = work->scope_count;
@@ -1888,6 +2397,10 @@ void PointProgramSave(PointProgram* prog, PointString filename) {
     }
   }
   
+  header.seg_scopes  = scopes_guid;
+  header.seg_entries = entries_guid;
+  
+  PointNodeSerialize(&dynamic_sections, prog->decls);
   
   //- Finalize
   FILE* file = fopen((char const*) filename.str, "wb");
@@ -1918,7 +2431,6 @@ void PointProgramLoad(PointProgram* prog, PointString filename) {
   POINTHEADER header = PointReadType(buffer, POINTHEADER);
   
   //- Types
-  
   POINTREDUCEDTYPE* type_set = (POINTREDUCEDTYPE*) PointArenaAlloc(&pieces, sizeof(POINTREDUCEDTYPE) * header.seg_types);
   PointDQueue(POINTREDUCEDTYPEREF) type_process_queue = PointZStruct;
   PointDQueueReserve(POINTREDUCEDTYPEREF, &type_process_queue, header.seg_types);
@@ -1943,12 +2455,18 @@ void PointProgramLoad(PointProgram* prog, PointString filename) {
   }
   
   //- Scopes
+  PointScopeEntry** entries_set = (PointScopeEntry**) PointArenaAlloc(&pieces, sizeof(PointScopeEntry*) * header.seg_entries);
+  PointScope** scope_set = (PointScope**) PointArenaAlloc(&pieces, sizeof(PointScope*) * header.seg_scopes);
+  
   PointDStack(PointScopeRef) scope_working_set = PointZStruct;
   PointDStackPush(PointScopeRef, &scope_working_set, prog->scopes.root);
+  ptu32 curr_entry_guid = 0;
+  ptu32 curr_scope_guid = 0;
   
   while (scope_working_set.len) {
     PointScope* work = PointDStackPop(PointScopeRef, &scope_working_set);
-    PointScopeEntriesDeserialize(&prog->scopes.names_arena, &prog->scopes.entries_pool, work, type_set, &buffer);
+    scope_set[curr_scope_guid++] = work;
+    PointScopeEntriesDeserialize(&prog->scopes.names_arena, &prog->scopes.entries_pool, work, type_set, entries_set, &curr_entry_guid, &buffer);
     
     work->scope_count = PointReadType(buffer, ptu32);
     for (int i = 0; i < work->scope_count; i++) {
@@ -1958,7 +2476,7 @@ void PointProgramLoad(PointProgram* prog, PointString filename) {
     }
   }
   
-  
+  prog->decls = PointNodeDeserialize(&prog->misc_arena, &prog->node_pool, type_set, scope_set, entries_set, &buffer);
   
   //- Finish
   PointArenaFree(&file_buffer);
