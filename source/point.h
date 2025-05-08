@@ -306,8 +306,8 @@ struct PointStringList {
     ptu64 total_size;
 };
 
-#define PointStrLit(s) (PointString) { .str = (ptu8*)(s), .size = sizeof(s) - 1 }
-#define PointStrMake(s) (PointString) { .str = (ptu8*)(s), .size = strlen(s) }
+#define PointStrLit(s)  (PointString { .str = (ptu8*)(s), .size = sizeof(s) - 1 })
+#define PointStrMake(s) (PointString { .str = (ptu8*)(s), .size = strlen(s) })
 #define PointStrExpand(s) (pti32)(s).size, (s).str
 
 // NOTE(EVERYONE): this will try to get one extra byte for \0
@@ -1802,6 +1802,7 @@ static void PointScopeEntriesSerialize(PointArena* arena, PointScope* scope, ptu
     PointScopeEntry* curr = scope->entries;
     while (curr) {
         curr->uid = *guid;
+        *guid += 1;
         
         ptu64* string_len = (ptu64*) PointArenaAllocUnaligned(arena, sizeof(ptu64));
         *string_len = curr->name.size;
