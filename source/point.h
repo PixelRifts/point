@@ -306,8 +306,8 @@ struct PointStringList {
     ptu64 total_size;
 };
 
-#define PointStrLit(s)  (PointString { .str = (ptu8*)(s), .size = sizeof(s) - 1 })
-#define PointStrMake(s) (PointString { .str = (ptu8*)(s), .size = strlen(s) })
+#define PointStrLit(s)  (PointString) { .str = (ptu8*)(s), .size = sizeof(s) - 1 }
+#define PointStrMake(s) (PointString) { .str = (ptu8*)(s), .size = strlen(s) }
 #define PointStrExpand(s) (pti32)(s).size, (s).str
 
 // NOTE(EVERYONE): this will try to get one extra byte for \0
@@ -430,15 +430,18 @@ void       PointTypeCacheUnregister(PointTypeCache* cache, PointType* ctype);
 //~ Scope Stack
 
 typedef struct PointScopeEntry PointScopeEntry;
+typedef struct PointScope PointScope;
+
 struct PointScopeEntry {
     PointScopeEntry* next;
+    PointScope*      scope;
     ptu32            uid;
     PointString      name;
     PointType*       type;
+    ptu32            arg_num; // 0 means not an argument
     // Other data I can't think of yet, probably
 };
 
-typedef struct PointScope PointScope;
 struct PointScope {
     PointScope* parent;
     
@@ -1349,6 +1352,7 @@ PointScopeEntry* PointScopeEntryCreate(PointScopeStack* scopes, PointScope* scop
     PointScopeEntry* entry = (PointScopeEntry*) PointPoolAlloc(&scopes->entries_pool);
     memmove(entry, &symbol, sizeof(PointScopeEntry));
     scope->entry_count += 1;
+    entry->scope = scope;
     PointScopeEntry* iter = scope->entries;
     if (iter) {
         while (iter->next) iter = iter->next;
@@ -1368,6 +1372,7 @@ void PointScopeEntryDelete(PointScopeStack* scopes, PointScope* scope, PointScop
         while (iter->next != symbol) iter = iter->next;
         iter->next = symbol->next;
     }
+    scope->entry_count -= 1;
     PointPoolDealloc(&scopes->entries_pool, symbol);
 }
 
@@ -1811,6 +1816,8 @@ static void PointScopeEntriesSerialize(PointArena* arena, PointScope* scope, ptu
         
         ptu32* type_id    = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
         *type_id = curr->type->uid;
+        ptu32* arg_num    = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
+        *arg_num = curr->arg_num;
         
         curr = curr->next;
     }
@@ -1829,13 +1836,14 @@ static void PointScopeEntriesDeserialize(PointArena* misc_arena, PointPool* entr
         
         if (prev) prev->next = curr;
         else fill->entries = curr;
+        curr->scope = fill;
         
         curr->name.size = PointReadType(track, ptu64);
         curr->name.str = (ptu8*) PointArenaAlloc(misc_arena, sizeof(ptu8) * curr->name.size);
         memmove(curr->name.str, track, sizeof(ptu8) * curr->name.size);
         track = ((ptu8*)track) + curr->name.size;
         curr->type = type_set[PointReadType(track, ptu32)].canonical;
-        
+        curr->arg_num = PointReadType(track, ptu32);
         scope_set[*curr_scope_uid] = curr;
         *curr_scope_uid += 1;
         
