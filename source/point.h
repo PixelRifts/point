@@ -2173,6 +2173,7 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
         
         case Point_NT_Expr_FuncProto: {
             ret->proto.arity = PointReadType(track, ptu32);
+            ret->proto.arg_names  = (PointScopeEntry**) PointArenaAlloc(arena, sizeof(PointScopeEntry*) * ret->proto.arity);
             for (int i = 0; i < ret->proto.arity; i++) {
                 ret->proto.arg_names[i] = entries_set[PointReadType(track, ptu32)];
             }

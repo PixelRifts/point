@@ -17,7 +17,7 @@ FOR %%f in (source\*.c) do SET c_filenames=!c_filenames! %%f
 REM ==============
 
 REM ==============
-SET compiler_flags=/MD /Zc:preprocessor /Zi /wd4090 /wd5105
+SET compiler_flags=/MD /Zc:preprocessor /Zi /wd4090 /wd5105 /FC
 SET include_flags=/I.\source\ /I.\third_party\include\ /I.\third_party\source\
 SET linker_flags=/link /DEBUG shell32.lib user32.lib winmm.lib userenv.lib gdi32.lib
 SET output=/Fe.\bin\testbed /Fo.\bin\int\
