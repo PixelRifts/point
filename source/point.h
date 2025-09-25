@@ -342,6 +342,11 @@ PointString16 PointStr16CString(ptu16* cstr);
 PointString16 PointStr16FromStr8(PointArena* arena, PointString str);
 PointString   PointStr8FromStr16(PointArena* arena, PointString16 str);
 
+//~ Linked Pointers
+typedef struct LinkedPointerNode {
+    void* ptr;
+    struct LinkedPointerNode* next;
+} LinkedPointerNode;
 
 //~ Types
 
@@ -462,8 +467,8 @@ struct PointScope {
 typedef struct PointScopeStack PointScopeStack;
 struct PointScopeStack {
     PointArena names_arena;
-    PointPool scopes_pool;
-    PointPool entries_pool;
+    PointPool  scopes_pool;
+    PointPool  entries_pool;
     
     PointScope* root;
 };
@@ -537,8 +542,9 @@ struct PointFuncProtoNode {
     PointNode*       arg_types;
     
     // Array, and not a Linked List
-    PointScopeEntry** arg_names;
-    ptu32             arity;
+    LinkedPointerNode* arg_names;
+    //PointScopeEntry** arg_names;
+    ptu32              arity;
 };
 
 typedef struct PointFuncNode PointFuncNode;
@@ -624,6 +630,7 @@ typedef enum PointConstantValueType {
     Point_CVT_Float,
     Point_CVT_Type,
     Point_CVT_Buffer,
+    Point_CVT_Void,
 } PointConstantValueType;
 
 typedef struct PointConstantValue PointConstantValue;
@@ -682,6 +689,7 @@ typedef struct PointProgram PointProgram;
 struct PointProgram {
     PointArena misc_arena;
     PointPool  node_pool;
+    PointPool  links_pool;
     
     PointScopeStack scopes;
     PointNode*       decls;
@@ -692,6 +700,23 @@ void PointProgramInit(PointProgram* prog);
 void PointProgramLoad(PointProgram* prog, PointString filename);
 void PointProgramSave(PointProgram* prog, PointString filename);
 void PointProgramFree(PointProgram* prog);
+
+
+//~ Type Canonicalizers
+PointType* PointCreateVoidTypeCanonical(PointProgram* prog);
+PointType* PointCreateIntTypeCanonical(PointProgram* prog, ptu32 size, ptb8 is_signed);
+PointType* PointCreateTypeTypeCanonical(PointProgram* prog);
+
+//~ Helper Constructors
+PointNode* PointCreateVoidTypeNode(PointProgram* prog);
+PointNode* PointCreateIntTypeNode(PointProgram* prog, ptu32 size, ptb8 is_signed);
+
+PointNode* PointCreateReturn(PointProgram* prog, PointNode* val);
+PointNode* PointCreateBlock(PointProgram* prog, PointNode* body, PointScope* scope);
+PointNode* PointCreateDeclaration(PointProgram* prog, PointScopeEntry* sym,
+                                  PointNode* type, PointNode* val, ptb8 is_const);
+
+
 
 POINT_EXTERN_C_END
 
@@ -1437,6 +1462,7 @@ ptu64 PointTypeHash(PointType* type) {
             hash *= PT_FNV64_PRIME;
         } break;
         
+        case Point_TK_MAX: {} break;
     }
     
     type->hash = hash;
@@ -1489,13 +1515,11 @@ void PointTypePrint(PointType* type, int indent) {
             PointTypePrint(type->array_t.sub_t, indent+1);
         } break;
         
+        case Point_TK_MAX: {} break;
     }
-    
 }
 
 //~ Type Cache
-
-
 
 void PointTypeCacheInit(PointArena* arena, PointTypeCache* cache) {
     PointMemoryZeroStruct(cache, PointTypeCache);
@@ -1571,6 +1595,7 @@ void PointProgramInit(PointProgram* prog) {
     PointMemoryZeroStruct(prog, PointProgram);
     PointArenaInit(&prog->misc_arena);
     PointPoolInit(&prog->node_pool, sizeof(PointNode));
+    PointPoolInit(&prog->links_pool, sizeof(LinkedPointerNode));
     
     PointScopeStackInit(&prog->scopes);
     prog->decls = NULL;
@@ -1581,13 +1606,13 @@ void PointProgramFree(PointProgram* prog) {
     PointTypeCacheFree(&prog->types);
     PointScopeStackFree(&prog->scopes);
     
+    PointPoolFree(&prog->links_pool);
     PointPoolFree(&prog->node_pool);
     PointArenaFree(&prog->misc_arena);
 }
 
 
 //~ Program File Format Helpers
-
 
 static void* PointRead(void** ptr, size_t type_size) {
     void* ret = *ptr;
@@ -1923,7 +1948,7 @@ static void PointNodeSerialize(PointArena* arena, PointNode* node) {
                 ptu32 i = 0;
                 while (curr) {
                     ptu32* entry_uid = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
-                    *entry_uid = work->proto.arg_names[i]->uid;
+                    *entry_uid = ((PointScopeEntry*)work->proto.arg_names[i].ptr)->uid;
                     PointDStackPush(PointNodeRef, &working_set, curr);
                     curr = curr->next;
                     i += 1;
@@ -2118,7 +2143,7 @@ ret->is_constant = true;\
 ret->constant_val.type = Point_CVT_Type;\
 ret->constant_val.type_lit = type_set[PointReadType(track, ptu32)].canonical;\
 } while (0)
-static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
+static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool, PointPool* link_pool,
                                        POINTREDUCEDTYPE* type_set, PointScope** scope_set,
                                        PointScopeEntry** entries_set,
                                        void** ptr) {
@@ -2160,28 +2185,31 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
         case Point_NT_Expr_Index:
         case Point_NT_Stmt_Assign: {
             __point_read_expr_type;
-            ret->binary_op.left  = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
-            ret->binary_op.right = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
-        } break; 
+            ret->binary_op.left  = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
+            ret->binary_op.right = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
+        } break;
         
         case Point_NT_Expr_Identity:
         case Point_NT_Expr_Negate:
         case Point_NT_Expr_Not: {
             __point_read_expr_type;
-            ret->unary_op.operand = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->unary_op.operand = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Expr_FuncProto: {
             ret->proto.arity = PointReadType(track, ptu32);
-            ret->proto.arg_names  = (PointScopeEntry**) PointArenaAlloc(arena, sizeof(PointScopeEntry*) * ret->proto.arity);
+            
+            LinkedPointerNode** to_ref = &ret->proto.arg_names;
             for (int i = 0; i < ret->proto.arity; i++) {
-                ret->proto.arg_names[i] = entries_set[PointReadType(track, ptu32)];
+                *to_ref = PointPoolAlloc(link_pool);
+                (*to_ref)->ptr = entries_set[PointReadType(track, ptu32)];
+                to_ref = &((*to_ref)->next);
             }
-            ret->proto.return_type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->proto.return_type = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
             
             PointNode* arg_types = NULL;
             for (int i = 0; i < ret->proto.arity; i++) {
-                PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                PointNode* curr = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
                 curr->next = arg_types;
                 arg_types  = curr;
             }
@@ -2190,29 +2218,29 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
         
         case Point_NT_Expr_Func: {
             __point_read_expr_type;
-            ret->func.proto = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
-            ret->func.body  = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track); 
+            ret->func.proto = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
+            ret->func.body  = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track); 
         } break;
         
         case Point_NT_Expr_Addr: {
             __point_read_expr_type;
-            ret->addr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->addr = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Expr_Deref: {
             __point_read_expr_type;
-            ret->deref = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->deref = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Expr_Call: {
             __point_read_expr_type;
             ret->call.arity = PointReadType(track, ptu32);
             
-            ret->call.called = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->call.called = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
             
             PointNode* args = NULL;
             for (int i = 0; i < ret->call.arity; i++) {
-                PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                PointNode* curr = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
                 curr->next = args;
                 args = curr;
             }
@@ -2226,19 +2254,19 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
         
         case Point_NT_Expr_Cast: {
             __point_read_expr_type;
-            ret->cast.type   = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
-            ret->cast.casted = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->cast.type   = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
+            ret->cast.casted = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Expr_ArrayLit: {
             __point_read_expr_type;
             ret->array_lit.count = PointReadType(track, ptu32);
             
-            ret->array_lit.type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->array_lit.type = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
             
             PointNode* values = NULL;
             for (int i = 0; i < ret->array_lit.count; i++) {
-                PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                PointNode* curr = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
                 curr->next = values;
                 values = curr;
             }
@@ -2269,11 +2297,11 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
             __point_read_constant_type;
             ret->func_type.arity = PointReadType(track, ptu32);
             
-            ret->func_type.return_type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->func_type.return_type = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
             
             PointNode* arg_types = NULL;
             for (int i = 0; i < ret->func_type.arity; i++) {
-                PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                PointNode* curr = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
                 curr->next = arg_types;
                 arg_types = curr;
             }
@@ -2285,20 +2313,20 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
             __point_read_expr_type;
             __point_read_constant_type;
             
-            ret->pointer_type.sub = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->pointer_type.sub = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Type_Array: {
             __point_read_expr_type;
             __point_read_constant_type;
             
-            ret->array_type.sub = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
-            ret->array_type.count = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->array_type.sub = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
+            ret->array_type.count = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         
         case Point_NT_Stmt_Expr: {
-            ret->expr_stmt = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->expr_stmt = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Stmt_Block: {
@@ -2307,7 +2335,7 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
             
             PointNode* next = NULL;
             for (int i = 0; i < block_len; i++) {
-                PointNode* curr = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                PointNode* curr = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
                 curr->next = next;
                 next = curr;
             }
@@ -2315,22 +2343,22 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
         } break;
         
         case Point_NT_Stmt_While: {
-            ret->while_loop.body = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
-            ret->while_loop.condition = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->while_loop.body = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
+            ret->while_loop.condition = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Stmt_If: {
             ptb8 has_else = PointReadType(track, ptb8);
             
             if (has_else) {
-                ret->if_stmt.else_body = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                ret->if_stmt.else_body = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
             }
-            ret->if_stmt.then_body = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
-            ret->if_stmt.condition = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->if_stmt.then_body = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
+            ret->if_stmt.condition = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Stmt_Return: {
-            ret->return_stmt = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+            ret->return_stmt = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_Decl: {
@@ -2341,9 +2369,9 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool,
             ret->decl.is_constant = PointReadType(track, ptb8);
             
             if (has_value)
-                ret->decl.val = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                ret->decl.val = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
             if (has_type)
-                ret->decl.type = PointNodeDeserialize(arena, node_pool, type_set, scope_set, entries_set, &track);
+                ret->decl.type = PointNodeDeserialize(arena, node_pool, link_pool, type_set, scope_set, entries_set, &track);
         } break;
         
         case Point_NT_COUNT: break;
@@ -2499,7 +2527,9 @@ void PointProgramLoad(PointProgram* prog, PointString filename) {
     
     PointNode* track_end = NULL;
     for (int i = 0; i < header.seg_nodes; i++) {
-        PointNode* curr_decl = PointNodeDeserialize(&prog->misc_arena, &prog->node_pool, type_set, scope_set, entries_set, &buffer);
+        PointNode* curr_decl = PointNodeDeserialize(&prog->misc_arena, &prog->node_pool,
+                                                    &prog->links_pool, type_set, scope_set,
+                                                    entries_set, &buffer);
         if (i == 0) {
             prog->decls = curr_decl;
             track_end = curr_decl;
@@ -2514,6 +2544,87 @@ void PointProgramLoad(PointProgram* prog, PointString filename) {
     PointArenaFree(&pieces);
 }
 
+
+//~ Type Canonicalizers
+
+PointType* PointCreateVoidTypeCanonical(PointProgram* prog) {
+    PointType ttype = {
+        .type = Point_TK_Void,
+        .size = 0,
+    };
+    return PointTypeCacheRegister(&prog->types, ttype);
+}
+
+PointType* PointCreateIntTypeCanonical(PointProgram* prog, ptu32 size, ptb8 is_signed) {
+    PointType ttype = {
+        .type = Point_TK_Int,
+        .size = size,
+        .int_t.is_signed = is_signed,
+    };
+    return PointTypeCacheRegister(&prog->types, ttype);
+}
+
+PointType* PointCreateTypeTypeCanonical(PointProgram* prog) {
+    PointType ttype = {
+        .type = Point_TK_Type,
+        .size = 0,
+    };
+    return PointTypeCacheRegister(&prog->types, ttype);
+}
+
+
+//~ Helper Constructors
+
+PointNode* PointCreateIntTypeNode(PointProgram* prog, ptu32 size, ptb8 is_signed) {
+    PointNode* return_type = PointPoolAlloc(&prog->node_pool);
+    return_type->expr_type = PointCreateTypeTypeCanonical(prog);
+    return_type->type = Point_NT_Type_Integer;
+    return_type->int_type.size = size;
+    return_type->int_type.is_signed = is_signed;
+    return_type->is_constant = true;
+    return_type->constant_val.type = Point_CVT_Int;
+    return_type->constant_val.type_lit = PointCreateIntTypeCanonical(prog, size, is_signed);
+    return return_type;
+}
+
+PointNode* PointCreateVoidTypeNode(PointProgram* prog) {
+    PointNode* return_type = PointPoolAlloc(&prog->node_pool);
+    return_type->expr_type = PointCreateTypeTypeCanonical(prog);
+    return_type->type = Point_NT_Type_Void;
+    return_type->is_constant = true;
+    return_type->constant_val.type = Point_CVT_Void;
+    return_type->constant_val.type_lit = PointCreateVoidTypeCanonical(prog);
+    return return_type;
+}
+
+PointNode* PointCreateReturn(PointProgram* prog, PointNode* val) {
+    PointNode* ret = PointPoolAlloc(&prog->node_pool);
+    PointMemoryZeroStruct(ret, PointNode);
+    ret->type = Point_NT_Stmt_Return;
+    ret->return_stmt = val;
+    return ret;
+}
+
+PointNode* PointCreateBlock(PointProgram* prog, PointNode* body, PointScope* scope) {
+    PointNode* ret = PointPoolAlloc(&prog->node_pool);
+    PointMemoryZeroStruct(ret, PointNode);
+    ret->type = Point_NT_Stmt_Block;
+    ret->block.body  = body;
+    ret->block.scope = scope;
+    return ret;
+}
+
+PointNode* PointCreateDeclaration(PointProgram* prog, PointScopeEntry* sym,
+                                  PointNode* type, PointNode* val, ptb8 is_const) {
+    PointNode* ret = PointPoolAlloc(&prog->node_pool);
+    PointMemoryZeroStruct(ret, PointNode);
+    ret->type = Point_NT_Decl;
+    ret->decl.ref  = sym;
+    ret->decl.type = type;
+    ret->decl.val  = val;
+    ret->decl.is_constant = is_const;
+    return ret;
+}
 
 POINT_EXTERN_C_END
 #endif //POINT_IMPLEMENTATION

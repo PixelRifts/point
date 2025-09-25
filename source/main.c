@@ -14,7 +14,6 @@ static PointNode* CreateDeclaration(PointProgram* program, PointScopeEntry* symb
 static PointNode* CreateSimpleOpProto(PointProgram* program,
                                       PointScopeEntry* a,
                                       PointScopeEntry* b) {
-    
     PointType my_int_type = {
         .type = Point_TK_Int,
         .size = 64,
@@ -68,9 +67,11 @@ static PointNode* CreateSimpleOpProto(PointProgram* program,
     arg_types->next->constant_val.type = Point_CVT_Int;
     arg_types->next->constant_val.type_lit = int64_canonical;
     
+    // TODO FIX
     PointScopeEntry** op_arg_names = PointArenaAlloc(&program->misc_arena, sizeof(PointScopeEntry) * 2);
     op_arg_names[0] = a;
     op_arg_names[1] = b;
+    //
     
     PointNode* ret = PointPoolAlloc(&program->node_pool);
     ret->expr_type = simple_op_type_canonical;
@@ -137,8 +138,6 @@ int main() {
         .func_t.is_varargs = false,
     };
     PointType* simple_op_type_canonical = PointTypeCacheRegister(&program.types, my_simple_op_type);
-    
-    
     
     
     
