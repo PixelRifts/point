@@ -1438,7 +1438,8 @@ ptu64 PointTypeHash(PointType* type) {
             hash *= PT_FNV64_PRIME;
         } break;
         
-        case Point_TK_Float: {} break;
+        case Point_TK_Float:  {} break;
+        case Point_TK_String: {} break;
         
         case Point_TK_Func: {
             hash ^= type->func_t.ret_t->hash;
@@ -1491,6 +1492,8 @@ void PointTypePrint(PointType* type, int indent) {
         case Point_TK_Float: {
             printf("Float (%llu bytes)\n", type->size);
         } break;
+        
+        case Point_TK_String: { printf("String\n"); } break;
         
         case Point_TK_Func: {
             printf("Func (%d args)%s\n", type->func_t.arity, type->func_t.is_varargs ? " + varargs" : "");
@@ -1680,6 +1683,7 @@ static void PointTypeSerialize(PointArena* arena, PointType* type) {
         case Point_TK_Type:
         case Point_TK_Void:
         case Point_TK_Bool:
+        case Point_TK_String:
         case Point_TK_MAX: {} break;
         
         case Point_TK_Int: {
@@ -1725,6 +1729,7 @@ static void PointTypeDeserialize(PointArena* misc_arena, POINTREDUCEDTYPE* slot,
         case Point_TK_Type:
         case Point_TK_Void:
         case Point_TK_Bool:
+        case Point_TK_String:
         case Point_TK_MAX: {} break;
         
         case Point_TK_Int: {
@@ -1763,6 +1768,7 @@ static ptb8 PointTypeCheckDependencies(POINTREDUCEDTYPE* curr, POINTREDUCEDTYPE*
         case Point_TK_Type:
         case Point_TK_Void:
         case Point_TK_Bool:
+        case Point_TK_String:
         case Point_TK_Int:
         case Point_TK_MAX: {} break;
         
@@ -1795,6 +1801,7 @@ static void PointTypeReducedToCanonical(PointTypeCache* types, POINTREDUCEDTYPE*
         case Point_TK_Type:
         case Point_TK_Void:
         case Point_TK_Bool:
+        case Point_TK_String:
         case Point_TK_MAX: {} break;
         
         case Point_TK_Int: {
