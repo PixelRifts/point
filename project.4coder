@@ -24,8 +24,8 @@ load_paths_custom = {
 	{ "./third_party/include/md" },
 	{ "./third_party/include/stb" },
 	{ "./third_party/source" },
-  //  { "./third_party/include/freetype" },
-  //  { "./third_party/include/dlg" },
+    //  { "./third_party/include/freetype" },
+    //  { "./third_party/include/dlg" },
 	{ "./", .recursive = false },
 };
 
@@ -40,7 +40,7 @@ command_list = {
 		.out = "*compilation*",
 		.footer_panel = true,
 		.save_dirty_files = true,
-		.cursor_at_end = false,
+		.cursor_at_end = true,
 		.cmd =
 		{
 			{ "build.bat", .os = "win" },

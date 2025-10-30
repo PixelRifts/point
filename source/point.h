@@ -354,6 +354,7 @@ typedef enum PointTypeKind {
     Point_TK_None,
     Point_TK_Int,
     Point_TK_Float,
+    Point_TK_String,
     Point_TK_Func,
     Point_TK_Type,
     Point_TK_Void,
@@ -490,7 +491,7 @@ void PointScopeStackFree(PointScopeStack* scopes);
 
 typedef enum PointNodeType {
     // Expressions
-    Point_NT_Expr_IntLit, Point_NT_Expr_FloatLit,
+    Point_NT_Expr_IntLit, Point_NT_Expr_FloatLit, Point_NT_Expr_StringLit,
     Point_NT_Expr_Add, Point_NT_Expr_Sub, Point_NT_Expr_Mul, Point_NT_Expr_Div,
     Point_NT_Expr_Mod, Point_NT_Expr_Identity, Point_NT_Expr_Negate, Point_NT_Expr_Not,
     Point_NT_Expr_Eq,  Point_NT_Expr_Neq, Point_NT_Expr_Less, Point_NT_Expr_Greater,
@@ -500,8 +501,8 @@ typedef enum PointNodeType {
     Point_NT_Expr_Ident, Point_NT_Expr_Cast, Point_NT_Expr_ArrayLit,
     
     // Types
-    Point_NT_Type_Integer, Point_NT_Type_Float, Point_NT_Type_Void,
-    Point_NT_Type_Func,
+    Point_NT_Type_Integer, Point_NT_Type_Float, Point_NT_Type_String,
+    Point_NT_Type_Void,    Point_NT_Type_Func,
     Point_NT_Type_Pointer, Point_NT_Type_Array,
     
     // Statements
@@ -628,6 +629,7 @@ typedef enum PointConstantValueType {
     Point_CVT_None,
     Point_CVT_Int,
     Point_CVT_Float,
+    Point_CVT_String,
     Point_CVT_Type,
     Point_CVT_Buffer,
     Point_CVT_Void,
@@ -640,6 +642,7 @@ struct PointConstantValue {
     union {
         pti64 int_lit;
         ptf64 float_lit;
+        PointString str_lit;
         PointType* type_lit;
         struct { ptu8* buf; ptu64 size; } buf_lit;
     };
@@ -1912,6 +1915,14 @@ static void PointNodeSerialize(PointArena* arena, PointNode* node) {
                 *constant = work->constant_val.float_lit;
             } break;
             
+            case Point_NT_Expr_StringLit: {
+                __point_dump_expr_type;
+                ptu64* size = (ptu64*) PointArenaAllocUnaligned(arena, sizeof(ptu64));
+                *size = work->constant_val.str_lit.size;
+                ptu8* buf = (ptu8*) PointArenaAllocUnaligned(arena, sizeof(ptu8) * work->constant_val.str_lit.size);
+                memmove(buf, work->constant_val.str_lit.str, work->constant_val.str_lit.size);
+            } break;
+            
             case Point_NT_Expr_Add:
             case Point_NT_Expr_Sub:
             case Point_NT_Expr_Mul:
@@ -2027,6 +2038,11 @@ static void PointNodeSerialize(PointArena* arena, PointNode* node) {
                 
                 ptu32* size = (ptu32*) PointArenaAllocUnaligned(arena, sizeof(ptu32));
                 *size = work->float_type.size;
+            } break;
+            
+            case Point_NT_Type_String: {
+                __point_dump_expr_type;
+                __point_dump_constant_type;
             } break;
             
             case Point_NT_Type_Void: {
@@ -2167,6 +2183,16 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool, 
             ret->constant_val.float_lit = PointReadType(track, ptf64);
         } break;
         
+        case Point_NT_Expr_StringLit: {
+            __point_read_expr_type;
+            ret->is_constant = true;
+            ret->constant_val.type = Point_CVT_String;
+            
+            ptu64 size = PointReadType(track, ptu64);
+            ret->constant_val.str_lit = PointStringAlloc(arena, size);
+            memmove(ret->constant_val.str_lit.str, PointRead(&track, sizeof(ptu8)*size), sizeof(ptu8)*size);
+        } break;
+        
         case Point_NT_Expr_Add:
         case Point_NT_Expr_Sub:
         case Point_NT_Expr_Mul:
@@ -2285,6 +2311,11 @@ static PointNode* PointNodeDeserialize(PointArena* arena, PointPool* node_pool, 
             __point_read_expr_type;
             __point_read_constant_type;
             ret->float_type.size = PointReadType(track, ptu32);
+        } break;
+        
+        case Point_NT_Type_String: {
+            __point_read_expr_type;
+            __point_read_constant_type;
         } break;
         
         case Point_NT_Type_Void: {
@@ -2572,6 +2603,14 @@ PointType* PointCreateTypeTypeCanonical(PointProgram* prog) {
     return PointTypeCacheRegister(&prog->types, ttype);
 }
 
+PointType* PointCreateStringTypeCanonical(PointProgram* prog) {
+    PointType ttype = {
+        .type = Point_TK_String,
+        .size = 8,
+    };
+    return PointTypeCacheRegister(&prog->types, ttype);
+}
+
 
 //~ Helper Constructors
 
@@ -2582,7 +2621,7 @@ PointNode* PointCreateIntTypeNode(PointProgram* prog, ptu32 size, ptb8 is_signed
     return_type->int_type.size = size;
     return_type->int_type.is_signed = is_signed;
     return_type->is_constant = true;
-    return_type->constant_val.type = Point_CVT_Int;
+    return_type->constant_val.type = Point_CVT_Type;
     return_type->constant_val.type_lit = PointCreateIntTypeCanonical(prog, size, is_signed);
     return return_type;
 }
@@ -2592,9 +2631,30 @@ PointNode* PointCreateVoidTypeNode(PointProgram* prog) {
     return_type->expr_type = PointCreateTypeTypeCanonical(prog);
     return_type->type = Point_NT_Type_Void;
     return_type->is_constant = true;
-    return_type->constant_val.type = Point_CVT_Void;
+    return_type->constant_val.type = Point_CVT_Type;
     return_type->constant_val.type_lit = PointCreateVoidTypeCanonical(prog);
     return return_type;
+}
+
+PointNode* PointCreateStringTypeNode(PointProgram* prog) {
+    PointNode* return_type = PointPoolAlloc(&prog->node_pool);
+    return_type->expr_type = PointCreateTypeTypeCanonical(prog);
+    return_type->type = Point_NT_Type_String;
+    return_type->is_constant = true;
+    return_type->constant_val.type = Point_CVT_Type;
+    return_type->constant_val.type_lit = PointCreateStringTypeCanonical(prog);
+    return return_type;
+}
+
+PointNode* PointCreateStringLiteralNode(PointProgram* prog, PointString val) {
+    PointNode* ret = PointPoolAlloc(&prog->node_pool);
+    PointMemoryZeroStruct(ret, PointNode);
+    ret->expr_type = PointCreateStringTypeCanonical(prog);
+    ret->type = Point_NT_Expr_StringLit;
+    ret->is_constant = true;
+    ret->constant_val.type = Point_CVT_String;
+    ret->constant_val.str_lit = val;
+    return ret;
 }
 
 PointNode* PointCreateReturn(PointProgram* prog, PointNode* val) {
